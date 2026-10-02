@@ -1,0 +1,44 @@
+name: Zig
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install verified Zig 0.15.2
+        env:
+          ZIG_ARCHIVE_SHA256: 02aa270f183da276e5b5920b1dac44a63f1a49e55050ebde3aecc9eb82f93239
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/zig-x86_64-linux-0.15.2.tar.xz"
+          install_dir="$RUNNER_TEMP/zig-0.15.2"
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            --output "$archive" \
+            https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz
+          printf '%s  %s\n' "$ZIG_ARCHIVE_SHA256" "$archive" | sha256sum --check --strict
+          mkdir -p "$install_dir"
+          tar -xJf "$archive" --strip-components=1 --no-same-owner --no-same-permissions -C "$install_dir"
+          chmod -R go-w "$install_dir"
+          "$install_dir/zig" version
+          printf '%s\n' "$install_dir" >> "$GITHUB_PATH"
+
+      - name: Install Debian GUI surface headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libx11-dev
+
+      # Validate the AES-256-GCM/PBKDF2 interoperability layer independently
+      # from the large monolith so crypto regressions remain obvious.
+      - run: zig fmt --check src/crypto/aes_gcm.zig
+      - run: zig build aes-test
+
+      # Existing project gates remain unchanged after the isolated crypto test.
+      - run: zig fmt --check build.zig src/naza_all.zig src/gui.zig src/model_task.zig
+      - run: zig build
+      - run: zig build test
+      - run: zig build run -- selftest
+      - run: python3 -m unittest discover -s tests -v

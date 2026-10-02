@@ -1,0 +1,15 @@
+.zig-cache/
+zig-out/
+.tools/
+models/llama3-small-Q3_K_M.gguf
+models/.naza-download-*/
+models/.naza-model-*
+models/*.part-*
+__pycache__/
+.enc_key
+.naza-rekey.lock
+.naza-rekey-pending/
+.naza-rekey-discard-*/
+chat_history.db.aes
+temp.db*
+models/*.aes

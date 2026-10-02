@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=NAZA Quantum Secure
+Comment=Native Zig local intelligence interface
+Exec=naza-zig gui
+Terminal=false
+Categories=Utility;Security;
+StartupNotify=true

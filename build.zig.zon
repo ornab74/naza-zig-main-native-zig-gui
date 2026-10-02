@@ -1,0 +1,16 @@
+.{
+    .fingerprint = 0x6808d348633f061f,
+    .name = .naza_zig_monolith,
+    .version = "0.9.0",
+    .minimum_zig_version = "0.15.2",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "README.md",
+        "SECURITY_AUDIT.md",
+        "android",
+        "debian",
+    },
+}
