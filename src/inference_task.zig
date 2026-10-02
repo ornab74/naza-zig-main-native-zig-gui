@@ -107,24 +107,31 @@ pub const InferenceTask = struct {
         child.term = if (std.posix.W.IFEXITED(result.status)) .{ .Exited = std.posix.W.EXITSTATUS(result.status) } else .{ .Signal = std.posix.W.TERMSIG(result.status) };
         _ = try child.wait();
         self.child = null;
-        self.failed = !success or std.mem.trim(u8, self.text(), " \t\r\n").len == 0;
+        self.failed = !success or (!self.scanner and std.mem.trim(u8, self.text(), " \t\r\n").len == 0);
         if (self.failed) {
             var message: [1024]u8 = undefined;
             const detail = std.mem.trim(u8, self.errors[0..self.errors_len], " \t\r\n");
             self.set(std.fmt.bufPrint(&message, "Model inference failed: {s}. Verify the pinned model in Models. No risk classification was produced.", .{if (detail.len == 0) "empty reply" else detail}) catch "Model inference failed.");
         }
-        if (!self.failed and self.scanner) {
-            const label = std.mem.trim(u8, self.text(), " \t\r\n");
-            if (!validRiskLabel(label)) {
-                self.failed = true;
-                var message: [2048]u8 = undefined;
-                const raw = self.text()[0..@min(self.output_len, 1600)];
-                self.set(std.fmt.bufPrint(&message, "Model returned no valid risk label. No classification was produced.\nRaw model reply: {s}", .{raw}) catch "Model returned no valid risk label. No classification was produced.");
-            }
-        }
+        if (!self.failed and self.scanner) self.set(scannerRiskLabel(self.text()));
         return true;
     }
 };
+
+// Preserve the original scanner contract: first standalone risk word,
+// case insensitive; Medium if the completed reply has no coherent label.
+pub fn scannerRiskLabel(reply: []const u8) []const u8 {
+    for (0..reply.len) |i| {
+        for ([_][]const u8{ "Low", "Medium", "High" }) |label| {
+            if (label.len > reply.len - i) continue;
+            const end = i + label.len;
+            if (std.ascii.eqlIgnoreCase(reply[i..end], label) and
+                (i == 0 or !std.ascii.isAlphanumeric(reply[i - 1])) and
+                (end == reply.len or !std.ascii.isAlphanumeric(reply[end]))) return label;
+        }
+    }
+    return "Medium";
+}
 
 pub fn validRiskLabel(label: []const u8) bool {
     return std.mem.eql(u8, label, "Low") or std.mem.eql(u8, label, "Medium") or std.mem.eql(u8, label, "High");
@@ -157,7 +164,7 @@ test "inference drains buffered reply before reaping child" {
     try std.testing.expectEqual(@as(u8, '1'), task.text()[599]);
 }
 
-test "inference failure and invalid labels never become Medium" {
+test "inference errors remain visible and incoherent scanner replies become Medium" {
     var task = try testChild(&.{ "/bin/sh", "-c", "printf 'missing model' >&2; exit 1" });
     defer task.deinit();
     try finishTest(&task);
@@ -167,8 +174,8 @@ test "inference failure and invalid labels never become Medium" {
     defer invalid.deinit();
     invalid.scanner = true;
     try finishTest(&invalid);
-    try std.testing.expect(invalid.failed);
-    try std.testing.expect(std.mem.indexOf(u8, invalid.text(), "No classification was produced") != null);
+    try std.testing.expect(!invalid.failed);
+    try std.testing.expectEqualStrings("Medium", invalid.text());
     try std.testing.expect(!validRiskLabel("garbled reply"));
     try std.testing.expect(validRiskLabel("High"));
 }
@@ -196,9 +203,8 @@ test "live GUI worker runs real chat and food inference when explicitly enabled"
         try std.testing.expect(!task.busy());
         try std.testing.expect(task.output_len > 0);
         if (task.scanner) {
-            // The pinned miniature model is not a reliable classifier. Either
-            // accept its exact label or show an explicit invalid-label result.
-            if (task.failed) try std.testing.expect(std.mem.indexOf(u8, task.text(), "Model returned no valid risk label") != null) else try std.testing.expect(validRiskLabel(std.mem.trim(u8, task.text(), " \t\r\n")));
+            try std.testing.expect(!task.failed);
+            try std.testing.expect(validRiskLabel(task.text()));
         } else {
             if (task.failed) std.debug.print("Live chat failure: {s}\n", .{task.text()});
             try std.testing.expect(!task.failed);
@@ -216,4 +222,17 @@ test "inference rejects oversized output and invalid input" {
     defer idle.deinit();
     try std.testing.expectError(error.InvalidPrompt, idle.start(std.testing.allocator, "chat", ""));
     try std.testing.expectError(error.InvalidMode, idle.start(std.testing.allocator, "untrusted", "hello"));
+}
+
+test "scanner labels preserve first-word parsing and empty-reply fallback" {
+    try std.testing.expectEqualStrings("High", scannerRiskLabel("Risk: HIGH. Later: low."));
+    try std.testing.expectEqualStrings("Low", scannerRiskLabel("Low confidence, verify independently."));
+    try std.testing.expectEqualStrings("Medium", scannerRiskLabel("mediumish highness"));
+    try std.testing.expectEqualStrings("Medium", scannerRiskLabel(""));
+    var empty = try testChild(&.{"/bin/true"});
+    defer empty.deinit();
+    empty.scanner = true;
+    try finishTest(&empty);
+    try std.testing.expect(!empty.failed);
+    try std.testing.expectEqualStrings("Medium", empty.text());
 }

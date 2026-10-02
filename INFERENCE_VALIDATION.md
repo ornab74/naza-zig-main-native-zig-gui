@@ -1,3 +1,5 @@
+> Current behavior (user-requested correction): completed scanner replies use the original first standalone Low/Medium/High parser, ignoring case, and default to Medium when no coherent label exists, including an empty reply. Model loading/execution failures remain errors. Earlier strict-label rejection results below are historical and have been superseded. The exact original GGUF and checksum are retained.
+
 # Live inference validation
 
 Tested on 2026-10-02 with the local pinned GGUF (111,454,016 bytes), SHA-256 `8e4f4856fb84bafb895f1eb08e6c03e4be613ead2d942f91561aeac742a619aa`.
@@ -26,3 +28,19 @@ Additional checks cover Q3_K fused dot products against scalar dequantization, b
 Desktop/phone controls were tested through the software renderer and event dispatcher; live X11 interaction was not exercised.
 
 Final results: **144/144 Zig tests passed**, including real GUI-worker inference with the normal 128/16-token budgets; **14/14 Python security tests passed**. The ReleaseSafe executable built successfully, model verification passed, and runtime selftest passed.
+
+## Follow-up: exact original model retained
+
+The original `llama3-small-Q3_K_M.gguf` and its original checksum remain selected in the downloader, GUI, and inference runtime. Replacement-model staging was removed. No replacement was downloaded.
+
+A new regression compares the exact verified file with llama.cpp reference results. Token IDs match for the complete Llama 3 chat prompt and a contraction/newline/multiple-space/Unicode/numeric sample. This exposed additional pretokenization differences, which are fixed. Special-token IDs now come from the actual vocabulary rather than hardcoded EOS assumptions.
+
+The first four greedy generated token IDs match the reference. The next two teacher-forced candidate scores are near a tie: llama.cpp reports 1.919115 and 1.918091; the Zig executor reports 1.913918 and 1.906223. The regression uses a 0.02 absolute tolerance for those quantized numerical results. Subsequent autoregressive text need not match exactly after a different choice at that near tie.
+
+`tests/reference_inference.py` reproduces the reference comparison using an installed llama_cpp package and a SHA-verified private model snapshot. It also probes the raw completion prompts used by the Python-style path. Those raw completions are incoherent too; the limitation is not specific to the Llama 3 chat wrapper. Classification errors remain explicit; no artificial risk label is introduced.
+
+After rebuilding, the exact-model CLI probes all exited successfully: chat in 9.67 seconds, clean-water observations in 10.5 seconds, and spoiled-chicken observations in 8.53 seconds. The two food inputs produced different raw responses, confirming fresh inference rather than a fixed Medium result. Neither raw reply was a valid risk label, so GUI validation rejects both. Model verification and runtime selftest passed.
+
+Follow-up validation: **146/146 Zig tests passed**, including the reference comparison and real GUI workers; **14/14 Python security tests passed**. The rebuilt ReleaseSafe executable reports the original filename, repository, and SHA-256 pin.
+
+Intentional-fallback correction verified: **147/147 Zig tests passed**, including live GUI chat/food workers using the exact original model. Successful incoherent or empty scanner replies now return Medium; runtime failures remain visible. The ReleaseSafe GUI executable was rebuilt successfully.

@@ -10,8 +10,6 @@ const GuiInferenceTask = @import("inference_task.zig").InferenceTask;
 // Target: Zig 0.15.x. Core logic stays pure Zig; the optional Debian GUI uses X11 only as the OS surface boundary.
 // ============================================================================
 
-const ModelSpec = @import("model_spec.zig");
-
 pub const VERSION = "0.9.0-native-gui";
 
 // ----------------------------------------------------------------------------
@@ -19,9 +17,9 @@ pub const VERSION = "0.9.0-native-gui";
 // ----------------------------------------------------------------------------
 
 pub const PinnedModel = struct {
-    pub const repo = ModelSpec.repo;
-    pub const file = ModelSpec.file;
-    pub const sha256_hex = ModelSpec.sha256_hex;
+    pub const repo = "https://huggingface.co/tensorblock/llama3-small-GGUF/resolve/main/";
+    pub const file = "llama3-small-Q3_K_M.gguf";
+    pub const sha256_hex = "8e4f4856fb84bafb895f1eb08e6c03e4be613ead2d942f91561aeac742a619aa";
     pub const max_download_bytes: u64 = 512 * 1024 * 1024;
     pub const max_redirects: usize = 5;
     pub const max_destination_bytes: usize = 4096;
@@ -8025,7 +8023,7 @@ fn runPinnedModelMode(allocator: std.mem.Allocator, prompt: []const u8, mode: In
     defer binder.deinitModel(&model);
     var executor = try Wave38Llm.Executor.init(allocator, &model, @min(meta.context_length, 2048));
     defer executor.deinit();
-    var sampler = try Wave38Llm.Sampler38.init(allocator, meta.vocab_size, .{ .temperature = 0 });
+    var sampler = try Wave38Llm.Sampler38.init(allocator, meta.vocab_size, .{ .temperature = 0, .repeat_penalty = 1 });
     defer sampler.deinit();
     const messages = [_]Wave38Llm.Wave38ChatMessage{
         .{ .role = .system, .content = switch (mode) {
@@ -8035,7 +8033,7 @@ fn runPinnedModelMode(allocator: std.mem.Allocator, prompt: []const u8, mode: In
         } },
         .{ .role = .user, .content = prompt },
     };
-    const chat_prompt = try Wave38Llm.ModelChat.render(allocator, tokenizer.vocab, &messages, true);
+    const chat_prompt = try Wave38Llm.Llama3Chat.render(allocator, &messages, true);
     defer allocator.free(chat_prompt);
     var generator = Wave38Llm.Generator{
         .allocator = allocator,
@@ -8198,10 +8196,8 @@ fn tuiScanner(allocator: std.mem.Allocator, input: *TuiInput, food: bool) !void 
     };
     defer allocator.free(answer);
     std.debug.print("\n\x1b[1;32mModel response:\x1b[0m\n{s}\n", .{answer});
-    const label = std.mem.trim(u8, answer, " \t\r\n");
-    if (!@import("inference_task.zig").validRiskLabel(label)) {
-        std.debug.print("Model returned no valid risk label. No classification was produced.\n", .{});
-    }
+    const label = @import("inference_task.zig").scannerRiskLabel(answer);
+    std.debug.print("\n\x1b[1;33mRisk level: {s}\x1b[0m\n", .{label});
     std.debug.print("\x1b[2mVerify real-world conditions independently.\x1b[0m\n", .{});
     tuiPause(input);
 }
@@ -15767,8 +15763,8 @@ pub const CheckpointInfo = struct {
     pub const target_lines: usize = 10000;
     pub const long_term_target_lines: usize = 50000;
     pub const zig_target = "0.15.2";
-    pub const model_file = ModelSpec.file;
-    pub const model_sha256 = ModelSpec.sha256_hex;
+    pub const model_file = "llama3-small-Q3_K_M.gguf";
+    pub const model_sha256 = "8e4f4856fb84bafb895f1eb08e6c03e4be613ead2d942f91561aeac742a619aa";
 
     pub fn banner(writer: anytype, lines: usize) !void {
         try writer.print("NAZA pure-Zig monolith: {d}/{d} lines checkpoint, Zig {s}, model {s}\n", .{ lines, long_term_target_lines, zig_target, model_file });
@@ -43383,10 +43379,10 @@ pub const Wave38Llm = struct {
         matrix_pool = null;
     }
 
-    pub const target_model_repo = ModelSpec.repository;
-    pub const target_model_file = ModelSpec.file;
-    pub const target_model_sha256 = ModelSpec.sha256_hex;
-    pub const target_model_approx_bytes: usize = ModelSpec.approximate_bytes;
+    pub const target_model_repo = "tensorblock/llama3-small-GGUF";
+    pub const target_model_file = "llama3-small-Q3_K_M.gguf";
+    pub const target_model_sha256 = "8e4f4856fb84bafb895f1eb08e6c03e4be613ead2d942f91561aeac742a619aa";
+    pub const target_model_approx_bytes: usize = 111 * 1024 * 1024;
     pub const llama3_vocab_hint: usize = 128256;
     pub const hard_max_metadata_entries: usize = 1_000_000;
     pub const hard_max_tensors: usize = 1_000_000;
@@ -44446,16 +44442,29 @@ pub const Wave38Llm = struct {
         fn splitPlain(allocator: std.mem.Allocator, out: *std.ArrayList(PretokenPiece), input: []const u8, start: usize, end: usize) !void {
             var i = start;
             while (i < end) {
+                var contraction_end: ?usize = null;
+                for ([_][]const u8{ "'s", "'t", "'re", "'ve", "'m", "'ll", "'d" }) |suffix| {
+                    if (suffix.len <= end - i and std.ascii.eqlIgnoreCase(input[i .. i + suffix.len], suffix)) {
+                        contraction_end = i + suffix.len;
+                        break;
+                    }
+                }
+                if (contraction_end) |j| {
+                    try out.append(allocator, .{ .start = i, .end = j });
+                    i = j;
+                    continue;
+                }
                 // Llama 3 BPE includes one leading space in word pieces.
-                const leading_space = input[i] == ' ' and i + 1 < end and (classifyByte(input[i + 1]) == .alpha or classifyByte(input[i + 1]) == .utf8);
+                const leading_space = input[i] == ' ' and i + 1 < end and (classifyByte(input[i + 1]) == .alpha or classifyByte(input[i + 1]) == .utf8 or classifyByte(input[i + 1]) == .punct);
                 const cls = classifyByte(input[i + @as(usize, if (leading_space) 1 else 0)]);
                 var j = i + 1 + @as(usize, if (leading_space) 1 else 0);
                 switch (cls) {
-                    .utf8 => {
-                        j = Utf8.nextBoundary(input, i + @as(usize, if (leading_space) 1 else 0));
-                        while (j < end and input[j] >= 0x80) j = Utf8.nextBoundary(input, j);
+                    .utf8, .alpha => {
+                        j = i + @as(usize, if (leading_space) 1 else 0);
+                        while (j < end and (classifyByte(input[j]) == .alpha or classifyByte(input[j]) == .utf8)) {
+                            j = Utf8.nextBoundary(input, j);
+                        }
                     },
-                    .alpha => while (j < end and classifyByte(input[j]) == .alpha) : (j += 1) {},
                     .digit => {
                         var count: usize = 1;
                         while (j < end and classifyByte(input[j]) == .digit and count < 3) : ({
@@ -44463,8 +44472,22 @@ pub const Wave38Llm = struct {
                             count += 1;
                         }) {}
                     },
-                    .space => while (j < end and classifyByte(input[j]) == .space) : (j += 1) {},
-                    .punct => while (j < end and classifyByte(input[j]) == .punct) : (j += 1) {},
+                    .space => {
+                        while (j < end and classifyByte(input[j]) == .space) : (j += 1) {}
+                        var last_newline: ?usize = null;
+                        for (input[i..j], i..) |byte, offset| {
+                            if (byte == '\r' or byte == '\n') last_newline = offset;
+                        }
+                        if (last_newline) |offset| {
+                            j = offset + 1;
+                        } else if (j < end and j > i + 1 and input[j - 1] == ' ' and classifyByte(input[j]) != .digit) {
+                            j -= 1;
+                        }
+                    },
+                    .punct => {
+                        while (j < end and classifyByte(input[j]) == .punct) : (j += 1) {}
+                        while (j < end and (input[j] == '\r' or input[j] == '\n')) : (j += 1) {}
+                    },
                 }
                 try out.append(allocator, .{ .start = i, .end = j });
                 i = j;
@@ -44630,11 +44653,6 @@ pub const Wave38Llm = struct {
         }
 
         pub fn encodePiece(self: BpeEncoder, allocator: std.mem.Allocator, bytes: []const u8) ![]u32 {
-            if (std.ascii.isAscii(bytes)) if (self.vocab.find(bytes)) |tok| {
-                const out = try allocator.alloc(u32, 1);
-                out[0] = tok;
-                return out;
-            };
             const initial = try self.initialByteTokens(allocator, bytes);
             defer allocator.free(initial);
             return self.merge(allocator, initial);
@@ -44692,7 +44710,7 @@ pub const Wave38Llm = struct {
             errdefer allocator.free(owned_merges);
             var special_list = std.ArrayList(SpecialToken).empty;
             errdefer special_list.deinit(allocator);
-            for ([_][]const u8{ "<|begin_of_text|>", "<|end_of_text|>", "<|eot_id|>", "<|start_header_id|>", "<|end_header_id|>", "<|im_start|>", "<|im_end|>", "<|endoftext|>" }) |text| {
+            for ([_][]const u8{ "<|begin_of_text|>", "<|end_of_text|>", "<|eot_id|>", "<|start_header_id|>", "<|end_header_id|>" }) |text| {
                 if (vocab.find(text)) |id| try special_list.append(allocator, .{ .text = text, .id = id });
             }
             const specials = try special_list.toOwnedSlice(allocator);
@@ -44778,26 +44796,6 @@ pub const Wave38Llm = struct {
                 try out.appendSlice(allocator, "<|start_header_id|>assistant<|end_header_id|>\n\n");
             }
             return try out.toOwnedSlice(allocator);
-        }
-    };
-
-    pub const ModelChat = struct {
-        pub fn render(allocator: std.mem.Allocator, vocab: Vocab, messages: []const Wave38ChatMessage, assistant: bool) ![]u8 {
-            if (vocab.find("<|im_start|>") != null and vocab.find("<|im_end|>") != null) {
-                var out = std.ArrayList(u8).empty;
-                errdefer out.deinit(allocator);
-                for (messages) |message| {
-                    try out.appendSlice(allocator, "<|im_start|>");
-                    try out.appendSlice(allocator, Llama3Chat.roleName(message.role));
-                    try out.append(allocator, '\n');
-                    try out.appendSlice(allocator, message.content);
-                    try out.appendSlice(allocator, "<|im_end|>\n");
-                }
-                if (assistant) try out.appendSlice(allocator, "<|im_start|>assistant\n");
-                return out.toOwnedSlice(allocator);
-            }
-            if (vocab.find("<|start_header_id|>") != null and vocab.find("<|end_header_id|>") != null) return Llama3Chat.render(allocator, messages, assistant);
-            return Error.InvalidTokenizer;
         }
     };
 
@@ -45768,7 +45766,6 @@ pub const Wave38Llm = struct {
                 _ = self.timing.push(deadline);
                 self.ledger.append(tok, deadline);
                 if (self.config.stop_on_eos and (tok == self.executor.model.meta.eos_id or
-                    tok == (self.tokenizer.vocab.find("<|im_end|>") orelse self.executor.model.meta.eos_id) or
                     tok == (self.tokenizer.vocab.find("<|eot_id|>") orelse self.executor.model.meta.eos_id))) break;
                 try out.append(self.allocator, tok);
                 if (self.stops.matched(out.items) != null) break;
@@ -65223,4 +65220,64 @@ test "GPT byte decoding restores spaces newlines and UTF8" {
     const decoded = try tokenizer.decode(&.{ 0, 1 });
     defer allocator.free(decoded);
     try std.testing.expectEqualStrings("hello world\né", decoded);
+}
+
+test "exact model pin remains identical to the Python references" {
+    try std.testing.expectEqualStrings("llama3-small-Q3_K_M.gguf", PinnedModel.file);
+    try std.testing.expectEqualStrings("https://huggingface.co/tensorblock/llama3-small-GGUF/resolve/main/", PinnedModel.repo);
+    try std.testing.expectEqualStrings("8e4f4856fb84bafb895f1eb08e6c03e4be613ead2d942f91561aeac742a619aa", PinnedModel.sha256_hex);
+}
+
+test "exact pinned model tokenization and logits agree with llama cpp reference" {
+    const enabled = std.process.getEnvVarOwned(std.testing.allocator, "NAZA_LLM_TEST_BINARY") catch return error.SkipZigTest;
+    defer std.testing.allocator.free(enabled);
+    const allocator = std.testing.allocator;
+    var file = try openRegularModel("models/" ++ PinnedModel.file);
+    defer file.close();
+    const bytes = try allocator.alloc(u8, @intCast((try file.stat()).size));
+    defer allocator.free(bytes);
+    try std.testing.expectEqual(bytes.len, try file.readAll(bytes));
+    try verifyPinnedModelBytes(bytes);
+    var index = try Wave38Llm.GgufOwnedIndex.parse(allocator, bytes);
+    defer index.deinit();
+    var tokenizer = try Wave38Llm.Tokenizer.fromIndex(allocator, index);
+    defer tokenizer.deinit();
+    // Frozen reference results from llama_cpp, add_bos=False, special=True,
+    // using exactly the SHA-pinned file, not a different model.
+    const simple = try tokenizer.encode("Hello world", true);
+    defer allocator.free(simple);
+    try std.testing.expectEqualSlices(u32, &.{ 9906, 1917 }, simple);
+    const varied = try tokenizer.encode("I'm testing.\n\n  Hello! Café 1234", true);
+    defer allocator.free(varied);
+    try std.testing.expectEqualSlices(u32, &.{ 40, 2846, 7649, 382, 220, 22691, 0, 66771, 220, 4513, 19 }, varied);
+    const prompt = try Wave38Llm.Llama3Chat.render(allocator, &.{
+        .{ .role = .system, .content = "You are a helpful assistant. Answer the user clearly and concisely." },
+        .{ .role = .user, .content = "Hello! What is two plus two? Please answer briefly." },
+    }, true);
+    defer allocator.free(prompt);
+    const tokens = try tokenizer.encode(prompt, true);
+    defer allocator.free(tokens);
+    try std.testing.expectEqualSlices(u32, &.{ 128000, 128006, 9125, 128007, 271, 2675, 527, 264, 11190, 18328, 13, 22559, 279, 1217, 9539, 323, 3613, 285, 989, 13, 128009, 128006, 882, 128007, 271, 9906, 0, 3639, 374, 1403, 5636, 1403, 30, 5321, 4320, 27851, 13, 128009, 128006, 78191, 128007, 271 }, tokens);
+    try Wave38Llm.initMatrixPool(allocator, 8);
+    defer Wave38Llm.deinitMatrixPool();
+    const meta = try Wave38Llm.LlamaMetadata.fromIndex(index);
+    const binder = Wave38Llm.Binder{ .allocator = allocator, .catalog = .{ .index = &index } };
+    var model = try binder.bind(meta);
+    defer binder.deinitModel(&model);
+    var executor = try Wave38Llm.Executor.init(allocator, &model, 2048);
+    defer executor.deinit();
+    var sampler = try Wave38Llm.Sampler38.init(allocator, meta.vocab_size, .{ .temperature = 0, .repeat_penalty = 1 });
+    defer sampler.deinit();
+    var logits = try executor.prefill(tokens, 0);
+    const prefix = [_]u32{ 122781, 16853, 100996, 118621 };
+    for (prefix, tokens.len..) |expected, position| {
+        try std.testing.expectEqual(expected, try sampler.choose(logits));
+        logits = try executor.forward(expected, position);
+    }
+    // llama.cpp's quantized CPU products and this float-input executor can
+    // select different tokens at a near tie. Compare teacher-forced scores,
+    // not an entire autoregressive suffix after the first divergent choice.
+    std.debug.print("Reference logit probe: {d:.6}, {d:.6}\n", .{ logits[73752], logits[63141] });
+    try std.testing.expectApproxEqAbs(@as(f32, 1.9191148), logits[73752], 0.02);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.9180909), logits[63141], 0.02);
 }

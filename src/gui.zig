@@ -1071,8 +1071,8 @@ pub const App = struct {
         var y = self.pageHeader(content, "MODEL MANAGER", "Download and verify the pinned model. Installation accepts only the compiled SHA-256. You can cancel while the interface stays responsive.");
         const identity = Rect{ .x = content.x, .y = y, .w = content.w, .h = 164 };
         self.canvas.card(identity, theme.cyan);
-        self.label(identity.x + 16, y + 16, @import("model_spec.zig").label, 2, theme.cyan);
-        ZigGlyphEngine.drawWrapped(&self.canvas, .{ .x = identity.x + 16, .y = y + 48, .w = identity.w - 32, .h = 100 }, "Source: HuggingFaceTB/SmolLM2-360M-Instruct-GGUF\nFile: models/smollm2-360m-instruct-q8_0.gguf\nHTTPS / max 512 MiB / private staging / no overwrite\nSHA-256:\n48ab3034d0dd401fbc721eb1df3217902\nfee7dab9078992d66431f09b7750201", 1, theme.text_soft, 10);
+        self.label(identity.x + 16, y + 16, "LLAMA3 SMALL / Q3_K_M", 2, theme.cyan);
+        ZigGlyphEngine.drawWrapped(&self.canvas, .{ .x = identity.x + 16, .y = y + 48, .w = identity.w - 32, .h = 100 }, "Source: tensorblock/llama3-small-GGUF on Hugging Face\nFile: models/llama3-small-Q3_K_M.gguf\nHTTPS / max 512 MiB / private staging / no overwrite\nSHA-256:\n8e4f4856fb84bafb895f1eb08e6c03e4be6\n13ead2d942f91561aeac742a619aa", 1, theme.text_soft, 10);
         y += 180;
         const button_w = @min(content.w, 280);
         if (self.model_busy) {
